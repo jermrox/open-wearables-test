@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
-	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+
+	import Alert from '$lib/components/ui/Alert.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import Wordmark from '$lib/components/layout/Wordmark.svelte';
 	import type { ActionData } from './$types';
@@ -37,14 +38,7 @@
 			}}
 		>
 			{#if form?.message}
-				<p
-					role="alert"
-					class="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3
-						py-2 text-sm text-danger"
-				>
-					<TriangleAlert size={16} aria-hidden="true" class="mt-0.5 shrink-0" />
-					{form.message}
-				</p>
+				<Alert>{form.message}</Alert>
 			{/if}
 
 			<label class="flex flex-col gap-1.5">

@@ -617,6 +617,53 @@ Two extractions exist because the same classes had been pasted more than once:
   dropped `aria-haspopup` and `aria-expanded` from the provider trigger. An e2e
   test now asserts both.
 
+### Mutations go through form actions
+
+Create, edit and delete post to named actions in
+[users/+page.server.ts](<src/routes/(app)/users/+page.server.ts>) — `?/create`,
+`?/update`, `?/delete`. The server holds the token, so no browser-facing API
+client is needed, `use:enhance` refreshes the list on success, and **the forms
+work without JavaScript**.
+
+`describe()` turns API failures into readable text — a 409 becomes "A user with
+that email already exists", not the raw `detail`. `attempt()` echoes the
+submitted values back into `fail()`, so a rejected form keeps what was typed.
+
+Three things that bit while building this:
+
+- **`enhance` resets the form on success by default**, restoring inputs to their
+  _attribute_ defaults. Svelte sets the _property_, so a reopened dialog showed
+  blank fields. Both dialogs pass `update({ reset: false })` and bind their
+  fields to local state re-seeded on open.
+- **Dialogs live once per page, not once per row** — at 100 rows the alternative
+  is 200 dialogs in the DOM. `users/row-actions.ts` carries the openers down via
+  context rather than threading props through list, table and card.
+- **Openness is separate from the subject.** `editOpen` plus `editing` avoids the
+  effect-driven syncing that a single `editing: User | null` needs to null
+  itself on close.
+
+### Shared behaviour, not copied behaviour
+
+Extracted after the same code appeared twice or more:
+
+| Helper                      | Replaces                                           |
+| --------------------------- | -------------------------------------------------- |
+| `utils/clipboard.svelte.ts` | copy-and-confirm in `CopyableId` and `UserActions` |
+| `utils/forms.svelte.ts`     | the `enhance` handler in both dialogs              |
+| `ui/Alert.svelte`           | the error box in both dialogs and the sign-in form |
+| `requireToken` / `attempt`  | per-action token check and error handling          |
+
+Runes only work in `.svelte` and `.svelte.ts` files — that is why the two
+helpers carry the double extension.
+
+### The provider list is cached
+
+`fetchProviders` caches in Redis for 60s. The list is near-static, but the call
+is not rare: every search keystroke, sort, page change and mutation re-runs the
+loader, and `enhance` invalidates everything on success. Unlike the session
+store this cache fails **open** — an unreachable Redis costs an API call, not a
+login.
+
 ### Contract details that bite
 
 - `connections` is `null` when `include=connections` was not requested and `[]`

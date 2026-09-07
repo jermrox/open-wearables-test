@@ -3,7 +3,10 @@ import { pager, signIn } from './support';
 
 const MOBILE = { width: 390, height: 844 };
 
-test.beforeEach(async ({ page }) => {
+// The write tests mutate the stand-in backend, so each test starts from a
+// known set rather than inheriting the previous one's edits.
+test.beforeEach(async ({ page, request }) => {
+	await request.post('http://localhost:8787/__reset');
 	await signIn(page);
 	await page.goto('/users');
 });
@@ -73,16 +76,91 @@ test('carries a working pagination bar above and below the list', async ({ page 
 	await expect(page).toHaveURL('/users?page=2');
 });
 
-test('reserves the not-yet-built controls without faking them', async ({ page }) => {
-	await expect(page.getByRole('button', { name: 'Add user' })).toBeDisabled();
+test('creates a user and shows them in the list', async ({ page }) => {
+	await page.getByRole('button', { name: 'Add user' }).click();
+
+	const dialog = page.getByRole('dialog', { name: 'Add user' });
+	await dialog.getByLabel('First name').fill('Nowa');
+	await dialog.getByLabel('Last name').fill('Osoba');
+	await dialog.getByLabel('Email').fill('nowa@example.com');
+	await dialog.getByRole('button', { name: 'Create user' }).click();
+
+	await expect(dialog).toBeHidden();
+	await expect(page.getByRole('table').getByText('nowa@example.com')).toBeVisible();
+});
+
+// The backend answers 409; the message must be readable, not the raw detail.
+test('keeps the form open and explains a duplicate email', async ({ page }) => {
+	await page.getByRole('button', { name: 'Add user' }).click();
+
+	const dialog = page.getByRole('dialog', { name: 'Add user' });
+	await dialog.getByLabel('Email').fill('zofia@example.com');
+	await dialog.getByRole('button', { name: 'Create user' }).click();
+
+	await expect(dialog.getByRole('alert')).toContainText('already exists');
+	await expect(dialog).toBeVisible();
+});
+
+test('edits a user from the row', async ({ page }) => {
+	await page.goto('/users?search=Kowalska');
+	await page.getByRole('row').nth(1).getByRole('button', { name: /^Edit/ }).click();
+
+	const dialog = page.getByRole('dialog', { name: 'Edit user' });
+	await expect(dialog.getByLabel('First name')).toHaveValue('Zofia');
+
+	await dialog.getByLabel('First name').fill('Zofia Maria');
+	await dialog.getByRole('button', { name: 'Save changes' }).click();
+
+	await expect(dialog).toBeHidden();
+	await expect(page.getByRole('table').getByText('Zofia Maria Kowalska')).toBeVisible();
+});
+
+// enhance resets the form on success, which clears the DOM values; reopening
+// must repopulate rather than show a blank form.
+test('reopens the edit form still populated after a save', async ({ page }) => {
+	await page.goto('/users?search=Kowalska');
+	const row = page.getByRole('row').nth(1);
+
+	await row.getByRole('button', { name: /^Edit/ }).click();
+	const dialog = page.getByRole('dialog', { name: 'Edit user' });
+	await dialog.getByRole('button', { name: 'Save changes' }).click();
+	await expect(dialog).toBeHidden();
+
+	await row.getByRole('button', { name: /^Edit/ }).click();
+
+	await expect(dialog.getByLabel('First name')).toHaveValue('Zofia');
+	await expect(dialog.getByLabel('Last name')).toHaveValue('Kowalska');
+	await expect(dialog.getByLabel('Email')).toHaveValue('zofia@example.com');
+});
+
+test('deletes a user after confirming', async ({ page }) => {
+	await page.goto('/users?search=Kowalska');
+	await expect(pager(page).getByText('1–1 of 1')).toBeVisible();
+
+	await page
+		.getByRole('row')
+		.nth(1)
+		.getByRole('button', { name: /^Delete/ })
+		.click();
+
+	const dialog = page.getByRole('dialog', { name: 'Delete user' });
+	await expect(dialog).toContainText('Zofia Kowalska');
+	await dialog.getByRole('button', { name: 'Delete user' }).click();
+
+	await expect(dialog).toBeHidden();
+	await expect(page.getByText('No users match')).toBeVisible();
+});
+
+test('copies a pairing link pointing at this app', async ({ page, context }) => {
+	await context.grantPermissions(['clipboard-read', 'clipboard-write']);
 
 	const row = page.getByRole('row').nth(1);
-	for (const name of [/^Edit/, /^Copy pairing link/, /^Delete/]) {
-		await expect(row.getByRole('button', { name })).toBeDisabled();
-	}
+	await row.getByRole('button', { name: /^Copy pairing link/ }).click();
 
-	// Details open from the row itself, so there is no View button.
-	await expect(row.getByRole('button', { name: /^View/ })).toHaveCount(0);
+	await expect(row.getByRole('button', { name: 'Pairing link copied' })).toBeVisible();
+	expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(
+		/^http:\/\/localhost:4173\/users\/[0-9a-f-]{36}\/pair$/
+	);
 });
 
 test('opens a user from anywhere in the row', async ({ page }) => {

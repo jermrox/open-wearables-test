@@ -95,3 +95,31 @@ export async function apiGet<T>(path: string, accessToken: string): Promise<T> {
 	if (!response.ok) await raiseFor(response);
 	return response.json();
 }
+
+async function apiWrite<T>(
+	method: 'POST' | 'PATCH' | 'DELETE',
+	path: string,
+	accessToken: string,
+	body?: unknown
+): Promise<T> {
+	const response = await fetch(apiUrl(path), {
+		method,
+		headers: {
+			Authorization: `Bearer ${accessToken}`,
+			...(body === undefined ? {} : { 'Content-Type': 'application/json' })
+		},
+		body: body === undefined ? undefined : JSON.stringify(body)
+	});
+
+	if (!response.ok) await raiseFor(response);
+	return response.status === 204 ? (undefined as T) : response.json();
+}
+
+export const apiPost = <T>(path: string, accessToken: string, body: unknown) =>
+	apiWrite<T>('POST', path, accessToken, body);
+
+export const apiPatch = <T>(path: string, accessToken: string, body: unknown) =>
+	apiWrite<T>('PATCH', path, accessToken, body);
+
+export const apiDelete = <T>(path: string, accessToken: string) =>
+	apiWrite<T>('DELETE', path, accessToken);
