@@ -34,8 +34,7 @@ from app.services.providers.sync_247_result import Sync247Result
 from app.services.providers.templates.base_247_data import Base247DataTemplate
 from app.services.providers.templates.base_oauth import BaseOAuthTemplate
 from app.services.timeseries_service import timeseries_service
-from app.utils.dates import align_tz_awareness, parse_datetime_or_default, parse_iso_datetime
-
+from app.utils.dates import align_tz_awareness, parse_iso_datetime
 from app.utils.structured_logging import log_structured
 
 # StressState integer → text qualifier (0=Invalid is treated as missing)
