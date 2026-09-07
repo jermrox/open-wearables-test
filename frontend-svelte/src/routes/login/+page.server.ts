@@ -1,11 +1,11 @@
 import { fail, redirect } from '@sveltejs/kit';
 import { resolve } from '$app/paths';
 import { API, ApiError, apiGet, login, type Developer } from '$lib/server/api';
-import { createSession, readSession } from '$lib/server/session';
+import { createSession } from '$lib/server/session';
 import type { Actions, PageServerLoad } from './$types';
 
-export const load: PageServerLoad = async ({ cookies }) => {
-	if (await readSession(cookies)) redirect(303, resolve('/dashboard'));
+export const load: PageServerLoad = async ({ locals }) => {
+	if (await locals.auth.session()) redirect(303, resolve('/dashboard'));
 };
 
 export const actions: Actions = {

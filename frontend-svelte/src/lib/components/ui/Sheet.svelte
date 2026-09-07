@@ -33,7 +33,9 @@
 	});
 </script>
 
-<!-- top-auto: setting both insets would stretch it to full height. -->
+<!-- Bottom sheet on a phone, centred panel from sm up. Setting both insets
+     stretches the box, so the phone pins with top-auto and the centred panel
+     needs h-fit for margin:auto to have anything to centre. -->
 <dialog
 	bind:this={dialog}
 	onclose={() => (open = false)}
@@ -42,15 +44,18 @@
 		if (event.target === dialog) open = false;
 	}}
 	aria-labelledby={headingId}
-	class="fixed inset-x-0 top-auto bottom-0 m-0 h-auto max-h-[85dvh] w-full max-w-none
-		rounded-t-2xl bg-surface p-0 text-foreground backdrop:bg-black/50"
+	class="fixed inset-x-0 top-auto bottom-0 m-0 h-auto max-h-[85dvh] w-full max-w-none rounded-t-2xl
+		bg-surface p-0 text-foreground backdrop:bg-black/50
+		sm:inset-0 sm:m-auto sm:h-fit sm:max-h-[80dvh] sm:w-[min(28rem,calc(100vw-2rem))] sm:rounded-2xl
+		sm:border sm:border-border"
 >
 	<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 	<div
 		onclick={(event) => event.stopPropagation()}
-		class="flex flex-col pb-[max(1rem,env(safe-area-inset-bottom))]"
+		class="flex flex-col pb-[max(1rem,env(safe-area-inset-bottom))] sm:pb-4"
 	>
-		<div class="mx-auto mt-3 h-1 w-9 shrink-0 rounded-full bg-border"></div>
+		<!-- Drag affordance only makes sense on the bottom sheet. -->
+		<div class="mx-auto mt-3 h-1 w-9 shrink-0 rounded-full bg-border sm:hidden"></div>
 
 		<div class="flex items-center justify-between px-4 py-2">
 			<h2 id={headingId} class="text-sm font-semibold">{title}</h2>
@@ -81,6 +86,20 @@
 	@keyframes slide-up {
 		from {
 			transform: translateY(100%);
+		}
+	}
+
+	/* The centred panel has nowhere to slide up from. */
+	@media (min-width: 40rem) {
+		dialog[open] {
+			animation: scale-in 150ms ease-out;
+		}
+
+		@keyframes scale-in {
+			from {
+				opacity: 0;
+				transform: scale(0.97);
+			}
 		}
 	}
 

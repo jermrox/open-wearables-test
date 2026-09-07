@@ -13,21 +13,15 @@ export type NavItem = {
 	label: string;
 	href: string;
 	icon: Component<LucideProps>;
-	/** Shown directly in the mobile bottom bar. The rest live behind "More". */
+	/** Shown directly in the mobile bottom bar; the rest live behind "More". */
 	primary: boolean;
 	external?: boolean;
 };
 
 /**
- * The one place navigation is defined. Sidebar, bottom bar and the "More"
- * sheet all derive from this — adding a destination means editing this array
- * and nothing else.
- *
- * Keep at most four `primary` items: the fifth bottom-bar slot is "More".
- *
- * Internal destinations go through `resolve()`, which type-checks the path
- * against the real route tree and applies `base` — a typo becomes a build
- * error rather than a dead link.
+ * The one place navigation is defined; sidebar, bottom bar and More sheet all
+ * derive from it. At most four `primary` items — the fifth bottom-bar slot is
+ * "More", and a unit test enforces it.
  */
 export const NAV_ITEMS: NavItem[] = [
 	{ label: 'Dashboard', href: resolve('/dashboard'), icon: House, primary: true },
@@ -48,10 +42,7 @@ export const NAV_ITEMS: NavItem[] = [
 export const PRIMARY_NAV_ITEMS = NAV_ITEMS.filter((item) => item.primary);
 export const SECONDARY_NAV_ITEMS = NAV_ITEMS.filter((item) => !item.primary);
 
-/**
- * A destination is active when the current path is it or nested under it, so
- * `/users/abc-123` still highlights "Users". External links never match.
- */
+/** Nested paths count, so `/users/abc-123` still highlights "Users". */
 export function isNavItemActive(item: NavItem, pathname: string): boolean {
 	if (item.external) return false;
 	return pathname === item.href || pathname.startsWith(`${item.href}/`);

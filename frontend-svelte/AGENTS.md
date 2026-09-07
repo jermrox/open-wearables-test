@@ -4,10 +4,10 @@ Ground-up rewrite of the React dashboard in SvelteKit. Lives on the
 `feat/svelte-frontend` branch and runs alongside the existing frontend until it
 reaches parity; only then does `frontend/` get deleted.
 
-**Status:** early. Container, design tokens, responsive shell, and
-cookie-backed authentication with a sign-in screen. **No real pages yet** —
-every destination under `(app)` is a placeholder. Read "Current state" before
-assuming anything exists.
+**Status:** the foundations are done and the first real page is built. Container,
+design tokens, responsive shell, cookie-backed authentication, and a complete
+`/users` list. Every other destination is still a placeholder. Read "Current
+state" before assuming anything exists.
 
 ## Non-negotiable: latest SvelteKit, Svelte 5 runes
 
@@ -215,8 +215,19 @@ await expect.element(page.getByRole('button', { name: 'Save' })).toBeVisible();
 
 [e2e/mock-api.ts](e2e/mock-api.ts) stands in for FastAPI, started by
 [playwright.config.ts](playwright.config.ts) alongside the app. Tests therefore
-walk the true path — form action, session creation, cookie, guard — without the
-full stack, and without knowing anything about the session's internal shape.
+walk the true path — form action, session creation, cookie, guard, list query —
+without the full stack, and without knowing anything about the session's
+internal shape.
+
+It serves `/auth/login`, `/auth/me`, `/token/refresh`, `/token/revoke`,
+`/oauth/providers` and `/users`, the last honouring `search`, `provider`,
+`sort_by`, `sort_order`, `page`, `limit` and `include`. **It rotates refresh
+tokens like the real backend**, so failing to persist a rotated token turns the
+suite red rather than logging users out an hour later in production.
+
+Fixtures live in [e2e/fixtures.ts](e2e/fixtures.ts) — 47 users, enough for three
+pages at 20 and a memorable one to search for. Add data there, not inline in a
+test.
 
 They do need a **running Redis** (`redis://localhost:6379/15`, a throwaway
 database). CI provides one as a service container.
@@ -409,6 +420,8 @@ no expiry column at all, only `revoked_at`.
 | [src/lib/server/redis.ts](src/lib/server/redis.ts)                         | Connection, created lazily      |
 | [src/lib/server/api.ts](src/lib/server/api.ts)                             | Raw calls to FastAPI            |
 | [src/lib/server/session.ts](src/lib/server/session.ts)                     | Cookie + Redis record + refresh |
+| [src/lib/server/auth.ts](src/lib/server/auth.ts)                           | Per-request context, memoised   |
+| [src/hooks.server.ts](src/hooks.server.ts)                                 | Puts that context on `locals`   |
 | [src/routes/login/+page.server.ts](src/routes/login/+page.server.ts)       | Sign-in form action             |
 | [src/routes/logout/+page.server.ts](src/routes/logout/+page.server.ts)     | Sign-out action                 |
 | [src/routes/(app)/+layout.server.ts](<src/routes/(app)/+layout.server.ts>) | The guard                       |
@@ -436,6 +449,20 @@ browser; do not defeat it by re-exporting from elsewhere.
 - **The sign-in error message is identical for a wrong email and a wrong
   password.** Distinguishing them tells an attacker which accounts exist.
 
+### One session read per request
+
+`locals.auth` is a lazy, memoised context: `session()` and `accessToken()` each
+resolve once per request however many loaders ask.
+
+This matters because the layout guard and a page `load` run **concurrently** for
+one render. Without memoisation that is two Redis reads and, worse, two
+simultaneous refresh attempts — and since the backend rotates refresh tokens,
+the second would invalidate the first.
+
+`hooks.server.ts` was removed once as speculative, when its only two consumers
+could never run together, and came back when `/users` made the overlap real.
+That is the just-in-time rule working, not indecision.
+
 ### The React app got this wrong — do not copy it
 
 Worth knowing, because the old code looks authoritative:
@@ -447,6 +474,200 @@ Worth knowing, because the old code looks authoritative:
 3. `setSession(data.access_token, data.developer_id)` reads a field that
    `TokenResponse` does not have. Harmless only because `getDeveloperId()` is
    never called.
+
+## List pages
+
+`/users` is the reference implementation. Copy its shape rather than inventing a
+second one.
+
+**State lives in the URL**, not in a component:
+`?search=…&page=2&size=50&sort=name&provider=garmin&provider=oura`. The server
+`load` re-runs on every change, so Back works, a filtered view is a shareable
+link, and the first paint is server-rendered. No client-side data fetching,
+which is why neither `@tanstack/svelte-query` nor a browser-facing API proxy
+exists yet.
+
+[users/query.ts](src/lib/users/query.ts) is the single translator between the
+URL and the API. It parses defensively — a hand-edited or stale parameter falls
+back to a default rather than erroring — and serialises **only non-default
+values**, so a plain `/users` URL stays clean.
+
+Two rules live in it that are easy to get wrong:
+
+- **Changing a filter returns to page 1.** Searching from page 5 would otherwise
+  land on an empty page 5 of the new result set.
+- **Changing the page size does not.** `withPageSize` recomputes the page to keep
+  the first visible row visible: rows 81–100 at 20 per page become page 2 at 50
+  per page. Resetting to page 1 discards the reader's place, which matters most
+  on exactly the deep pages where anyone bothers to change the size.
+
+### The history rule
+
+Getting this wrong is invisible until someone tries to leave a search.
+
+| Interaction                       | Navigation                                           | Why                                                    |
+| --------------------------------- | ---------------------------------------------------- | ------------------------------------------------------ |
+| Pagination, sorting, filter chips | plain `<a href>`, so `pushState`                     | A deliberate click; Back should undo it                |
+| Applying the provider panel       | `goto()`, so `pushState`                             | Same, but the selection is assembled first             |
+| Typing in the search box          | `goto(..., { replaceState: true })`, debounced 300ms | Otherwise eight characters leave eight history entries |
+
+`ui/SearchField.svelte` owns both the debounce and `replaceState` so no future
+list can get it wrong. SvelteKit aborts a superseded navigation, so a slow
+response cannot overwrite a newer one.
+
+An e2e test guards this by typing three characters **slower** than the debounce,
+so each really navigates, then asserting that one Back leaves the page entirely.
+With `pushState` it would take three.
+
+**Never default a list to `sort=last_synced_at`.** It is the one sort that makes
+the backend aggregate across all matched users before `LIMIT`; fine as a
+deliberate choice, wasteful on every render. `created_at desc` is the default.
+
+### What is generic and what is not
+
+| Generic — reuse                                                             | Users-specific       |
+| --------------------------------------------------------------------------- | -------------------- |
+| `lists/types.ts` — `Page`, `Paginated<T>`, `SortOrder`                      | `users/types.ts`     |
+| `lists/pagination.ts` — page window, `PAGE_SIZES`, `pageForSize`            | `users/query.ts`     |
+| `ui/Pagination`, `ui/PageSizeSelect`, `ui/SearchField`, `ui/SortableHeader` | `users/avatar.ts`    |
+| `ui/FilterChip`, `ui/ToggleChip`, `ui/CopyableId`, `ui/Sheet`               | `components/users/*` |
+
+The `ui/` components take an `hrefFor` callback rather than a query object, so
+they know nothing about users.
+
+`users/query.ts` is deliberately **not** generalised yet: parsing, omitting
+defaults from the URL, and resetting to page 1 when a filter changes are all
+generic concerns, but one example is not enough to fix the shape. Generalise
+when the second list page lands and the two can be compared.
+
+### Filters
+
+Provider filtering is one control at every width: a `Provider` button with a
+count, opening `ui/Sheet` — a bottom sheet on a phone, a centred panel from
+`sm` up. Inline chips were tried first and abandoned: the backend enables up to
+fourteen providers, which wraps into several rows on a phone and eventually on a
+desktop too.
+
+**The provider list is never hardcoded.** It comes from
+`GET /api/v1/oauth/providers?enabled_only=true`, fetched alongside the users in
+the same `load`. The query layer treats provider names as opaque strings, so
+nothing in `src/` needs updating when the backend gains a provider.
+
+Inside the panel the chips are **buttons that build a local draft**, applied by
+an `Apply` button. They used to be links, which navigated on every click and so
+closed the panel — picking three providers meant three round trips and three
+reopenings. The draft also means one navigation instead of three.
+
+Selected providers appear as removable chips under the toolbar, because the
+panel hides them once closed. `SelectedProviders` falls back to the raw name for
+a provider the backend no longer returns, so a filter can never become
+invisible-but-active.
+
+### Pagination
+
+The same bar renders **above and below** the list, so the page size can be
+changed without scrolling past a full page of rows. Both are `<nav>`s, given
+distinct labels ("Pagination above the list" / "…below the list") — two
+identically named landmarks is an accessibility smell, and it also makes every
+control ambiguous to `getByRole`. Tests use the `pager()` helper in
+[e2e/support.ts](e2e/support.ts) to scope to the lower one.
+
+`paginationItems` computes the number window; a gap that would hide a single
+page renders that page instead, since "1 … 3 … 5" spends an ellipsis to hide one
+number. Numbers appear from `sm` up; below that the bar keeps a plain `2 / 5`
+counter.
+
+Page size is a native `<select>`, not a row of links: it collapses to one
+control on a phone and hands over to the OS picker. **This is the one list
+control that needs JavaScript** — a `<select>` change cannot submit on its own —
+whereas paging and sorting stay plain links. Its `id` comes from `$props.id()`
+because the component renders twice on the page.
+
+`users/+page.server.ts` clamps a page past the end of the data and redirects to
+the last real page. Without it a stale bookmark, or a size change made when the
+list was longer, renders a dead empty page. Only the loader can do this: the
+pure helper does not know the total.
+
+### Rows open the user
+
+There is no View action. The whole row is clickable, done without JavaScript:
+the name link in `UserIdentity` carries `after:absolute after:inset-0` and the
+row is `relative`, so one real link covers the row. Keyboard and screen-reader
+users get an ordinary link.
+
+Anything interactive inside the row needs `relative z-10` to sit above that
+overlay — `UserActions` and `CopyableId` both do, and a test asserts that
+copying the id does **not** navigate.
+
+Row actions are edit, copy pairing link and delete, all `disabled` with a
+`title` saying why. The pairing link is deliberately inert: it would point at
+`/users/{id}/pair`, which does not exist here yet, and a dead link an admin
+sends to an end user is worse than a disabled button.
+
+### Shared styling, not copied styling
+
+Two extractions exist because the same classes had been pasted more than once:
+
+- **`ui/chip.ts`** — `FilterChip` (a link, `aria-current`) and `ToggleChip` (a
+  button, `aria-pressed`) differ only in element and ARIA. The class string
+  lives in `chipClass()` so they cannot drift.
+- **`ui/Button.svelte`** — `primary` and `outline` variants, used by the sign-in
+  form, `Add user` and both provider-panel buttons. It **spreads `...rest`**, and
+  that is not cosmetic: the first version took a fixed prop list and silently
+  dropped `aria-haspopup` and `aria-expanded` from the provider trigger. An e2e
+  test now asserts both.
+
+### Contract details that bite
+
+- `connections` is `null` when `include=connections` was not requested and `[]`
+  when the user has none. **Do not collapse that with `?? []`** — the UI renders
+  `—` for the first and "No connections" for the second.
+- `search` matches a pasted UUID against the id server-side, so there is no
+  "looks like an id" branch in the frontend. `GET /users/{id}` must not be used
+  as a substitute: it returns an unpopulated row (`last_synced_at`,
+  `has_active_connection` and `connections` are always empty).
+- Provider metadata (icons, display names) lives at `GET /api/v1/oauth/providers`
+  and `icon_url` is relative to the **API** base. The browser cannot reach the
+  API directly under cookie sessions, so provider badges are text until
+  something proxies those assets.
+- Parameter validation errors come back as **400**, not 422.
+
+### Both layouts render at once
+
+`UsersList` emits the table and the cards, hiding one with CSS, so every row is
+in the DOM twice. Picking in JS would need the viewport width, which the server
+does not have. Harmless at 20 rows; worth revisiting now that 100 is selectable.
+
+It also means a bare `getByText('Zofia')` matches twice — scope list assertions
+to `getByRole('table')` or to a card.
+
+### Four CSS traps already paid for
+
+Each of these was written, shipped into a screenshot or a red test, and fixed.
+
+- **`sticky` inside an `overflow-x` wrapper anchors to the wrapper, not the
+  viewport.** A sticky table header with `top-14` dropped onto the first row and
+  silently swallowed its clicks — invisible in a screenshot, caught by a click
+  test. The table header is deliberately not sticky: the page is the vertical
+  scroller, so it could not work there anyway.
+- **Setting both `top` and `bottom` stretches a box.** `inset-0` with `h-auto`
+  fills the gap and `margin: auto` then has nothing to centre. The bottom sheet
+  pins with `top-auto bottom-0`; the centred panel needs `h-fit`.
+- **`min-h-*` does nothing on an inline element.** A row of size links had a box
+  only around the selected one. Use `inline-flex` with a height.
+- **`capitalize` lifts every word.** On `via garmin` it produces "Via Garmin";
+  wrap just the value.
+
+### ARIA on a link is not ARIA on a button
+
+`aria-sort` and `aria-pressed` are invalid on `<a>` and `svelte-check` rejects
+them. The fixes are worth copying rather than rediscovering:
+
+| Want            | On a link                               | On a button    |
+| --------------- | --------------------------------------- | -------------- |
+| Sorted column   | `aria-sort` on the `<th>`, not the link | —              |
+| Selected filter | `aria-current="true"`                   | `aria-pressed` |
+| Current page    | `aria-current="page"`                   | —              |
 
 ## Styling is scoped — do not reach for global CSS
 
@@ -489,46 +710,67 @@ un-ignored first — git does not descend into an excluded directory.
 
 ```
 src/
-├── app.css                         # design tokens + base styles
-├── app.html                        # favicons + manifest live here
+├── app.css                          # design tokens + base styles
+├── app.html                         # favicons + manifest live here
+├── hooks.server.ts                  # per-request auth context into locals
 ├── lib/
 │   ├── components/
 │   │   ├── PagePlaceholder.svelte
-│   │   ├── layout/
-│   │   │   ├── AppShell.svelte     # composes the whole responsive shell
-│   │   │   ├── AppVersion.svelte   # "Version  0.7.0" footer row
-│   │   │   ├── BottomNav.svelte    # mobile bar: 4 destinations + More
-│   │   │   ├── LogoutButton.svelte # inert until auth lands
-│   │   │   ├── MoreSheet.svelte    # secondary destinations, mobile only
-│   │   │   ├── NavLink.svelte
-│   │   │   ├── Sidebar.svelte      # desktop only, lg and up
-│   │   │   ├── TopBar.svelte
-│   │   │   ├── Wordmark.svelte     # inlined logotype, inherits currentColor
-│   │   │   └── layout.browser.spec.ts
-│   │   └── ui/Sheet.svelte         # generic bottom sheet, no nav knowledge
-│   ├── config/nav.ts + nav.spec.ts # single source of truth for destinations
-│   └── utils/cn.ts
-├── lib/server/                     # never reaches the browser
-│   └── api.ts  redis.ts  session.ts + session.spec.ts
+│   │   ├── layout/                  # shell: AppShell, TopBar, Sidebar,
+│   │   │                            # BottomNav, MoreSheet, NavLink,
+│   │   │                            # Wordmark, AppVersion, LogoutButton
+│   │   │                            # + layout.browser.spec.ts
+│   │   ├── ui/                      # nothing here knows about users
+│   │   │   ├── Sheet.svelte         # bottom sheet / centred panel
+│   │   │   ├── Pagination.svelte    # counter, numbers, size select
+│   │   │   ├── PageSizeSelect.svelte
+│   │   │   ├── SearchField.svelte   # debounce + replaceState live here
+│   │   │   ├── SortableHeader.svelte
+│   │   │   ├── FilterChip.svelte    # link: navigates
+│   │   │   ├── ToggleChip.svelte    # button: edits a local draft
+│   │   │   └── CopyableId.svelte
+│   │   └── users/                   # UsersList, UsersTable, UserCard,
+│   │                                # UserIdentity, UserAvatar, SyncCell,
+│   │                                # ConnectionBadges, UserActions,
+│   │                                # ProviderFilter, SelectedProviders,
+│   │                                # AddUserButton
+│   ├── config/nav.ts                # single source of truth for destinations
+│   ├── lists/                       # generic list plumbing
+│   │   ├── types.ts                 # Page, Paginated<T>, SortOrder
+│   │   └── pagination.ts            # page window, PAGE_SIZES, pageForSize
+│   ├── users/                       # types.ts, query.ts, avatar.ts
+│   ├── server/                      # never reaches the browser
+│   │   ├── api.ts  redis.ts  session.ts  auth.ts
+│   │   └── users.ts  providers.ts
+│   └── utils/                       # cn.ts, datetime.ts
 ├── routes/
-│   ├── +layout.svelte              # imports app.css
-│   ├── +page.ts                    # redirects / → /dashboard
-│   ├── login/     +page.svelte + +page.server.ts
-│   ├── logout/    +page.server.ts  # action only
+│   ├── +layout.svelte               # imports app.css
+│   ├── +page.ts                     # redirects / → /dashboard
+│   ├── login/    +page.svelte + +page.server.ts
+│   ├── logout/   +page.server.ts    # action only
 │   └── (app)/
-│       ├── +layout.server.ts       # the auth guard
-│       ├── +layout.svelte          # wraps children in AppShell
-│       └── {dashboard,users,syncs,webhooks,coverage,settings}/+page.svelte
-└── e2e/  auth.e2e.ts  navigation.e2e.ts  mock-api.ts  support.ts  fixtures.ts
+│       ├── +layout.server.ts        # the auth guard
+│       ├── +layout.svelte           # wraps children in AppShell
+│       ├── users/  +page.svelte + +page.server.ts
+│       ├── users/[id]/              # placeholder; rows already link here
+│       └── {dashboard,syncs,webhooks,coverage,settings}/+page.svelte
+└── e2e/  auth  navigation  users (.e2e.ts) + mock-api  support  fixtures
 ```
 
-Every page under `(app)` is a `PagePlaceholder`. The shell, routing, theming,
-authentication and tests are real; the pages are not.
+Every `.spec.ts` sits beside what it covers; `*.browser.spec.ts` files aggregate
+a whole component directory.
 
-No page fetches domain data yet, so there is no browser-facing API proxy. Server
-`load` functions can call FastAPI directly through `apiGet` with the token from
-`validAccessToken`. A `/api/[...path]` proxy becomes necessary only when a
-component needs to call the backend from the browser.
+**Real:** the shell, theming, cookie authentication, and the `/users` list with
+search, provider filters, sorting, pagination and page size.
+
+**Not real:** every other page under `(app)` is a `PagePlaceholder`, `/users/[id]`
+shows only the id, and the row actions plus `Add user` are `disabled`
+placeholders.
+
+Only `/users` fetches domain data, and it does so from a server `load` via
+`apiGet`. There is still **no browser-facing API proxy** — a `/api/[...path]`
+route becomes necessary only when a component has to call the backend from the
+browser, which URL-driven lists never need.
 
 ## Open decisions
 
@@ -536,21 +778,30 @@ Do not settle these unilaterally; they are the owner's calls.
 
 ### Data fetching
 
-Not chosen. SvelteKit `load` + `invalidate` covers the first slices with no
-dependency. `@tanstack/svelte-query` becomes justified at the first real need —
-sync-status polling, optimistic updates, or a cache shared across routes. The
-React app has 16 hook files built on react-query, so this will likely be
-revisited; wait for the concrete trigger.
+Still not chosen, and `/users` shipped without it: a URL-driven list needs no
+client cache, because the server `load` is the cache key.
+
+`@tanstack/svelte-query` becomes justified at the first need a `load` cannot
+serve — polling sync status, optimistic updates on a mutation, or state shared
+between two routes. The React app has 16 hook files on react-query, so this will
+likely be revisited; wait for that concrete trigger rather than the next page.
 
 ### Component primitives
 
 `bits-ui` + `shadcn-svelte` are the equivalents of Radix + shadcn/ui, and the
-component mapping is close to 1:1. Still not installed — the one overlay so far,
-`MoreSheet`, is a native `<dialog>`, which already provides focus trapping and
-Esc handling. `cn()` is named for the shadcn convention so the generator would
-work unmodified if they are added later. Buttons, cards, inputs and
-badges are plain styled elements. Add them at the first component needing real
-focus management — a dialog, select, or dropdown.
+component mapping is close to 1:1. **Still not installed**, and the platform has
+covered every case so far: `ui/Sheet` is a native `<dialog>` (focus trap, Esc,
+inert background, `::backdrop`), and the page-size control is a native
+`<select>`.
+
+`cn()` is named for the shadcn convention so its generator would work unmodified
+if they are added later. Buttons, cards, inputs, chips and badges are plain
+styled elements.
+
+The trigger to reconsider is a control the platform genuinely lacks: a combobox
+with typeahead, a menu needing roving focus, or a popover that must be anchored
+to its trigger — the last is why the provider panel is centred rather than
+anchored.
 
 ## Decision log
 
@@ -579,6 +830,18 @@ Choices already made, with reasons, so they are not re-litigated.
   "one image, any backend" by turning the API URL into a server-side variable.
   The cost accepted: the node server is load-bearing, so the dashboard can no
   longer be served as static files.
+- **URL-driven list state** over component state — Back, shareable links and
+  server-rendered first paint, and it removes the need for a data-fetching
+  library on list pages.
+- **Native `<dialog>` again for the provider panel** rather than a popover
+  anchored to its trigger: anchor positioning is not evenly supported yet, and a
+  centred panel works everywhere.
+- **Draft-then-apply for the provider filter**, not navigate-per-chip, so
+  several providers cost one round trip.
+- **A native `<select>` for page size**, accepting that it needs JavaScript,
+  because a row of links did not fit a phone and could not grow.
+- **Avatar tones from a fixed six-token palette**, not a hash to hex, so avatars
+  cannot break contrast or clash with the theme.
 - **`cn` kept as the helper name** despite being opaque, so `shadcn-svelte` can
   generate components without edits if it is ever added.
 

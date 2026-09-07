@@ -3,7 +3,7 @@
  * the full stack. Started by playwright.config.ts. Mirrors the contracts in
  * backend/app/api/routes/v1/{auth,token}.py.
  */
-import { CREDENTIALS, DEVELOPER } from './fixtures';
+import { CREDENTIALS, DEVELOPER, PROVIDER_SETTINGS, USERS } from './fixtures';
 
 const PORT = Number(process.env.MOCK_API_PORT ?? 8787);
 
@@ -38,6 +38,62 @@ const server = Bun.serve({
 		if (pathname === '/api/v1/auth/me') {
 			const token = request.headers.get('authorization')?.replace('Bearer ', '') ?? '';
 			return validAccessTokens.has(token) ? json(DEVELOPER) : json({ detail: 'Unauthorized' }, 401);
+		}
+
+		if (pathname === '/api/v1/oauth/providers') {
+			return json(PROVIDER_SETTINGS);
+		}
+
+		if (pathname === '/api/v1/users') {
+			const params = new URL(request.url).searchParams;
+			const search = params.get('search')?.toLowerCase() ?? '';
+			const page = Number(params.get('page') ?? 1);
+			const limit = Number(params.get('limit') ?? 20);
+			const includeConnections = params.getAll('include').includes('connections');
+
+			const wantedProviders = params.getAll('provider');
+
+			let matched = USERS.filter((user) => {
+				if (
+					search &&
+					![user.first_name, user.last_name, user.email, user.id]
+						.join(' ')
+						.toLowerCase()
+						.includes(search)
+				) {
+					return false;
+				}
+				if (
+					wantedProviders.length > 0 &&
+					!user.connections.some((c) => wantedProviders.includes(c.provider))
+				) {
+					return false;
+				}
+				return true;
+			});
+
+			const direction = params.get('sort_order') === 'asc' ? 1 : -1;
+			const key = params.get('sort_by') ?? 'created_at';
+			matched = [...matched].sort((a, b) => {
+				const left = key === 'name' ? `${a.first_name} ${a.last_name}` : String(a[key] ?? '');
+				const right = key === 'name' ? `${b.first_name} ${b.last_name}` : String(b[key] ?? '');
+				return left.localeCompare(right) * direction;
+			});
+
+			const items = matched.slice((page - 1) * limit, page * limit).map((user) => ({
+				...user,
+				connections: includeConnections ? user.connections : null
+			}));
+
+			return json({
+				items,
+				total: matched.length,
+				page,
+				limit,
+				pages: Math.ceil(matched.length / limit),
+				has_next: page * limit < matched.length,
+				has_prev: page > 1
+			});
 		}
 
 		if (pathname === '/api/v1/token/refresh') {

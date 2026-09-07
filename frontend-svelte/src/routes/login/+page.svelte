@@ -2,6 +2,7 @@
 	import { enhance } from '$app/forms';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+	import Button from '$lib/components/ui/Button.svelte';
 	import Wordmark from '$lib/components/layout/Wordmark.svelte';
 	import type { ActionData } from './$types';
 
@@ -71,18 +72,12 @@
 				/>
 			</label>
 
-			<button
-				type="submit"
-				disabled={submitting}
-				class="mt-1 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg
-					bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors
-					hover:bg-primary-hover disabled:opacity-60"
-			>
+			<Button type="submit" disabled={submitting} class="mt-1 w-full">
 				{#if submitting}
 					<LoaderCircle size={16} aria-hidden="true" class="animate-spin" />
 				{/if}
 				{submitting ? 'Signing in…' : 'Sign in'}
-			</button>
+			</Button>
 		</form>
 	</div>
 </main>
