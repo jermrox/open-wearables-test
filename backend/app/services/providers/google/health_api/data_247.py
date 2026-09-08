@@ -14,6 +14,8 @@ from decimal import Decimal
 from typing import Any, NoReturn
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
+
 from app.config import settings
 from app.constants.google_health_endpoints import LIST_ENDPOINT, RECONCILE_ENDPOINT, ROLLUP_ENDPOINT
 from app.database import DbSession
@@ -22,7 +24,7 @@ from app.repositories.provider_settings_repository import ProviderSettingsReposi
 from app.repositories.user_connection_repository import UserConnectionRepository
 from app.schemas.enums import GRANULARITY_WINDOW_SECONDS, DataGranularity, SeriesType
 from app.schemas.model_crud.activities import TimeSeriesSampleCreate
-from app.schemas.providers.google import DataTypeMetric, ListSpec, RollupSpec, TimeShape
+from app.schemas.providers.google import DataPointsPage, DataTypeMetric, ListSpec, RollupSpec, TimeShape
 from app.services.providers.api_client import make_authenticated_request
 from app.services.providers.google.health_api.helpers import (
     GOOGLE_HEALTH_API_SOURCE,
@@ -84,7 +86,9 @@ class GoogleHealth247Data(Base247DataTemplate):
                     else:
                         samples = self._rollup_samples(db, user_id, metric, start_time, end_time, granularity)
                     counts = timeseries_service.bulk_create_samples(db, samples) if samples else None
+                db.commit()
             except Exception as e:
+                db.rollback()
                 self._log_metric_failure(metric.data_type, user_id, e)
                 failures[metric.data_type] = str(e)
                 continue
@@ -93,15 +97,15 @@ class GoogleHealth247Data(Base247DataTemplate):
                 results[metric.data_type] = counts
 
         try:
-            sleep_count = self.sleep.load_and_save(db, user_id, start_time, end_time)
+            with db.begin_nested():
+                sleep_count = self.sleep.load_and_save(db, user_id, start_time, end_time)
+            db.commit()
             succeeded += 1
         except Exception as e:
+            db.rollback()
             self._log_metric_failure("sleep", user_id, e)
             failures["sleep"] = str(e)
             sleep_count = 0
-
-        if results or sleep_count:
-            db.commit()
 
         # Every attempted data type failed (e.g. ACCOUNT_NOT_LINKED) — surface it so the sync
         # is marked FAILED rather than an empty success. A partial/empty run returns normally.
@@ -149,6 +153,26 @@ class GoogleHealth247Data(Base247DataTemplate):
         counts = timeseries_service.bulk_create_samples(db, samples)
         db.commit()
         return counts
+
+    def _parse_page(self, response: Any, endpoint: str) -> DataPointsPage:
+        """Validate one page envelope.
+
+        Raises so the caller's per-metric handler records the failure: a malformed page must
+        never read as an exhausted window, which is what let a failed fetch pass as "no data".
+        """
+        try:
+            return DataPointsPage.model_validate(response)
+        except ValidationError as e:
+            log_structured(
+                self.logger,
+                "error",
+                f"Unexpected {self.provider_name} page shape",
+                provider=self.provider_name,
+                endpoint=endpoint,
+                response_type=type(response).__name__,
+                error=str(e),
+            )
+            raise RuntimeError(f"Malformed {endpoint} response: {type(response).__name__}") from e
 
     def _log_metric_failure(self, data_type: str, user_id: UUID, error: Exception) -> None:
         log_and_capture_error(
@@ -235,10 +259,9 @@ class GoogleHealth247Data(Base247DataTemplate):
                 user_id=str(user_id),
                 trace_id=endpoint,
             )
-            if not isinstance(response, dict):
-                break
-            points.extend(response.get("rollupDataPoints", []))
-            page_token = response.get("nextPageToken")
+            page = self._parse_page(response, endpoint)
+            points.extend(page.rollup_data_points)
+            page_token = page.next_page_token
             if not page_token:
                 break
         return points
@@ -382,10 +405,9 @@ class GoogleHealth247Data(Base247DataTemplate):
                 user_id=str(user_id),
                 trace_id=endpoint,
             )
-            if not isinstance(response, dict):
-                break
-            points.extend(response.get("dataPoints", []))
-            page_token = response.get("nextPageToken")
+            page = self._parse_page(response, endpoint)
+            points.extend(page.data_points)
+            page_token = page.next_page_token
             if not page_token:
                 break
         return points
