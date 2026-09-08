@@ -107,6 +107,18 @@ class Settings(BaseSettings):
     # Will default to false in a future release.
     historical_sync_on_connect: bool = True
 
+    # PROVIDER HTTP CLIENT
+    provider_request_timeout_seconds: float = Field(30.0, gt=0, le=300)
+    provider_max_retries: int = Field(3, ge=0, le=10)
+    provider_retry_base_delay_seconds: float = Field(15.0, gt=0, le=300)
+
+    # LINKED SYNC COORDINATION
+    # The pull primary renews its lease on every provider request; see check_linked_sync_lease.
+    linked_sync_pull_lease_seconds: int = Field(120, ge=30, le=3600)
+    linked_sync_renew_interval_seconds: int = Field(30, ge=5, le=1800)
+    # Garmin backfill holds its lock across tasks with no renewer; gc_stuck_backfills recovers it.
+    linked_sync_backfill_lease_seconds: int = Field(4 * 60 * 60, ge=60, le=24 * 60 * 60)
+
     # Whether to ingest per-second workout samples (speed, cadence, power, GPS, etc.) into
     # data_point_series on workout webhook arrival. Significantly increases DB storage.
     # Per-provider granularity will be added via ProviderSetting in a future release.
@@ -292,6 +304,32 @@ class Settings(BaseSettings):
         if self.access_log_level is None:
             self.access_log_level = (
                 AccessLogLevel.ERRORS if self.environment == EnvironmentType.PRODUCTION else AccessLogLevel.ALL
+            )
+        return self
+
+    @model_validator(mode="after")
+    def check_linked_sync_lease(self) -> "Settings":
+        """Fail at startup rather than losing a lock mid-sync.
+
+        Renewal rides on provider requests, so the longest silence between two renewals is
+        one timed-out attempt plus the longest 429 backoff before the next one.
+        """
+        if self.linked_sync_renew_interval_seconds >= self.linked_sync_pull_lease_seconds:
+            raise ValueError(
+                f"LINKED_SYNC_RENEW_INTERVAL_SECONDS ({self.linked_sync_renew_interval_seconds}s) must be "
+                f"shorter than LINKED_SYNC_PULL_LEASE_SECONDS ({self.linked_sync_pull_lease_seconds}s)."
+            )
+        longest_backoff = (
+            self.provider_retry_base_delay_seconds * 2 ** (self.provider_max_retries - 1)
+            if self.provider_max_retries
+            else 0.0
+        )
+        worst_gap = self.provider_request_timeout_seconds + longest_backoff
+        if worst_gap >= self.linked_sync_pull_lease_seconds:
+            raise ValueError(
+                f"LINKED_SYNC_PULL_LEASE_SECONDS ({self.linked_sync_pull_lease_seconds}s) must exceed the worst "
+                f"gap between lease renewals ({worst_gap:.0f}s = PROVIDER_REQUEST_TIMEOUT_SECONDS + "
+                "PROVIDER_RETRY_BASE_DELAY_SECONDS * 2^(PROVIDER_MAX_RETRIES-1))."
             )
         return self
 

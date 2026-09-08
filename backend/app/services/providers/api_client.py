@@ -9,17 +9,19 @@ from uuid import UUID
 import httpx
 from fastapi import HTTPException, status
 
+from app.config import settings
 from app.database import DbSession
 from app.integrations.redis_client import get_redis_client
 from app.repositories import UserConnectionRepository
 from app.services.providers.templates.base_oauth import BaseOAuthTemplate
+from app.services.sync_coordination import renew_if_due
 from app.utils.structured_logging import log_structured
 
 logger = logging.getLogger(__name__)
 
 # Rate limiting configuration (Garmin: 100 req / 60s window)
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 15.0  # Base delay for exponential backoff (seconds): 15s, 30s, 60s
+MAX_RETRIES = settings.provider_max_retries
+RETRY_BASE_DELAY = settings.provider_retry_base_delay_seconds
 
 
 def _get_valid_token(
@@ -152,6 +154,7 @@ def make_authenticated_request(
     url = f"{api_base_url}{endpoint}"
 
     for attempt in range(MAX_RETRIES + 1):
+        renew_if_due()
         try:
             with httpx.Client(http2=http2) as client:
                 response = client.request(
@@ -160,7 +163,7 @@ def make_authenticated_request(
                     headers=request_headers,
                     params=params or {},
                     json=json_data,
-                    timeout=30.0,
+                    timeout=settings.provider_request_timeout_seconds,
                 )
 
             # Handle 429 rate limiting with retry
@@ -301,7 +304,9 @@ def download_binary_content(
     headers = {"Authorization": f"Bearer {access_token}"}
 
     for attempt in range(MAX_RETRIES + 1):
-        response = httpx.get(url, headers=headers, timeout=30.0, follow_redirects=True)
+        response = httpx.get(
+            url, headers=headers, timeout=settings.provider_request_timeout_seconds, follow_redirects=True
+        )
         if response.status_code == 429 and attempt < MAX_RETRIES:
             backoff_delay = RETRY_BASE_DELAY * (2**attempt)
             log_structured(

@@ -191,8 +191,9 @@ class GoogleHealth247Data(Base247DataTemplate):
                     continue
                 for series_type, field, subfield, scale in self._bindings(metric.series_type, spec):
                     value = read_number(value_obj, field, subfield, scale)
-                    if value is not None:
-                        samples.append(self._sample(user_id, recorded_at, value, series_type, is_daily_total))
+                    if value is None or value == 0:
+                        continue
+                    samples.append(self._sample(user_id, recorded_at, value, series_type, is_daily_total))
         return samples
 
     def _fetch_rollup_window(
@@ -292,12 +293,13 @@ class GoogleHealth247Data(Base247DataTemplate):
             device_model = None if reconcile else extract_source(point.get("dataSource"))[1]
             for series_type, field, subfield, scale in self._bindings(metric.series_type, spec):
                 value = read_number(value_obj, field, subfield, scale)
-                if value is not None:
-                    samples.append(
-                        self._sample(
-                            user_id, recorded_at, value, series_type, spec.is_daily_total, zone_offset, device_model
-                        )
+                if value is None or value == 0:
+                    continue
+                samples.append(
+                    self._sample(
+                        user_id, recorded_at, value, series_type, spec.is_daily_total, zone_offset, device_model
                     )
+                )
         return samples
 
     @staticmethod

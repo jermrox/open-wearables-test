@@ -18,15 +18,17 @@ Redis keys (scoped to provider + provider_user_id + scope):
 """
 
 import logging
+import threading
+import time
+from dataclasses import dataclass
 from uuid import UUID, uuid4
 
+from app.config import settings
 from app.integrations.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
 
 _PREFIX = "linked_sync"
-_PRIMARY_TTL = 4 * 60 * 60  # 4 h — covers longest Garmin backfill
-_SECONDARY_TTL = 4 * 60 * 60
 
 # Atomically delete a key only if its current value matches ARGV[1].
 # Prevents releasing a lock that was already expired and re-acquired by
@@ -39,9 +41,25 @@ else
 end
 """
 
+# Same guard as the release: only extend a lease we still own, never a successor's.
+_RENEW_LUA = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("expire", KEYS[1], ARGV[2])
+else
+    return 0
+end
+"""
+
 
 def _primary_key(provider: str, provider_user_id: str, scope: str) -> str:
     return f"{_PREFIX}:{provider}:{provider_user_id}:{scope}:primary"
+
+
+def _ttl_for(scope: str) -> int:
+    """Pull renews its lease as it works; the backfill scope spans tasks and cannot."""
+    if scope == "pull":
+        return settings.linked_sync_pull_lease_seconds
+    return settings.linked_sync_backfill_lease_seconds
 
 
 def _secondaries_key(provider: str, provider_user_id: str, scope: str) -> str:
@@ -70,7 +88,7 @@ def try_become_primary(
     token = uuid4().hex
     value = f"{user_id}:{token}"
 
-    acquired = bool(client.set(key, value, nx=True, ex=_PRIMARY_TTL))
+    acquired = bool(client.set(key, value, nx=True, ex=_ttl_for(scope)))
     if acquired:
         return True, token, user_id
 
@@ -102,6 +120,81 @@ def release_primary(
     return bool(get_redis_client().eval(_RELEASE_LUA, 1, key, value))
 
 
+@dataclass
+class _Lease:
+    provider: str
+    provider_user_id: str
+    user_id: UUID
+    token: str
+    scope: str
+    last: float
+    lost: bool = False
+
+
+_lease = threading.local()
+
+
+def renew_primary(
+    provider: str,
+    provider_user_id: str,
+    user_id: UUID,
+    token: str,
+    *,
+    scope: str = "pull",
+) -> bool:
+    """Extend the lease while the token still matches. False means we no longer hold it."""
+    key = _primary_key(provider, provider_user_id, scope)
+    value = f"{user_id}:{token}"
+    return bool(get_redis_client().eval(_RENEW_LUA, 1, key, value, _ttl_for(scope)))
+
+
+def bind_primary_lease(
+    provider: str,
+    provider_user_id: str | None,
+    user_id: UUID,
+    token: str,
+    *,
+    scope: str = "pull",
+) -> None:
+    """Bind a held lock to this thread so provider requests renew it as they go.
+
+    A no-op without a token, so callers that are not primary need no branch.
+    """
+    _lease.state = (
+        _Lease(provider, provider_user_id, user_id, token, scope, time.monotonic())
+        if token and provider_user_id
+        else None
+    )
+
+
+def clear_primary_lease() -> None:
+    _lease.state = None
+
+
+def renew_if_due() -> None:
+    """Renew this thread's lease once the interval has elapsed; called per provider request."""
+    state: _Lease | None = getattr(_lease, "state", None)
+    if state is None or state.lost:
+        return
+    if time.monotonic() - state.last < settings.linked_sync_renew_interval_seconds:
+        return
+    state.last = time.monotonic()
+    if not renew_primary(state.provider, state.provider_user_id, state.user_id, state.token, scope=state.scope):
+        state.lost = True
+        logger.warning(
+            "Lost %s %s lease for user %s mid-sync — another profile now holds it",
+            state.provider,
+            state.scope,
+            state.user_id,
+        )
+
+
+def lease_lost() -> bool:
+    """True once a renewal found the lock reassigned: stop acting as primary."""
+    state: _Lease | None = getattr(_lease, "state", None)
+    return state is not None and state.lost
+
+
 def store_primary_token(
     provider: str,
     provider_user_id: str,
@@ -118,7 +211,7 @@ def store_primary_token(
     :func:`release_primary_for_user`.
     """
     key = f"{_PREFIX}:{provider}:{provider_user_id}:{scope}:token:{user_id}"
-    get_redis_client().setex(key, _PRIMARY_TTL, token)
+    get_redis_client().setex(key, _ttl_for(scope), token)
 
 
 def release_primary_for_user(
@@ -155,7 +248,7 @@ def register_secondary(
     client = get_redis_client()
     key = _secondaries_key(provider, provider_user_id, scope)
     client.sadd(key, str(user_id))
-    client.expire(key, _SECONDARY_TTL)
+    client.expire(key, _ttl_for(scope))
 
 
 def get_secondary_user_ids(
