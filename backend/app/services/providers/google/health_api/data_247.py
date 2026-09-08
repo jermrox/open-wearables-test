@@ -310,7 +310,7 @@ class GoogleHealth247Data(Base247DataTemplate):
             if not isinstance(value_obj, dict):
                 continue
             recorded_at, zone_offset = self._point_time(value_obj, spec.time)
-            if recorded_at is None or not (start_time <= recorded_at < end_time):
+            if recorded_at is None or not self._in_window(spec.time, recorded_at, start_time, end_time):
                 continue
             # Only list points carry a dataSource; reconciled points are already merged.
             device_model = None if reconcile else extract_source(point.get("dataSource"))[1]
@@ -350,6 +350,17 @@ class GoogleHealth247Data(Base247DataTemplate):
                 return parse_date(point.get("date")), None
 
     @staticmethod
+    def _in_window(shape: TimeShape, recorded_at: datetime, start_time: datetime, end_time: datetime) -> bool:
+        """Whether a point belongs to this sync window, matching :meth:`_time_filter`.
+
+        Daily points are stamped midnight, so an intraday window would never contain one;
+        they are compared by date instead, reaching back a day for a total published late.
+        """
+        if shape is TimeShape.DATE:
+            return (start_time.date() - timedelta(days=1)) <= recorded_at.date() <= end_time.date()
+        return start_time <= recorded_at < end_time
+
+    @staticmethod
     def _time_filter(
         data_type: str, shape: TimeShape, start_time: datetime, end_time: datetime, session_interval: bool = False
     ) -> str:
@@ -362,8 +373,9 @@ class GoogleHealth247Data(Base247DataTemplate):
                 low = (start_time.date() - timedelta(days=1)).isoformat()
                 high = (end_time.date() + timedelta(days=1)).isoformat()
             case TimeShape.DATE:
+                # A daily total is published once its day closes.
                 member = f"{field}.date"
-                low = start_time.date().isoformat()
+                low = (start_time.date() - timedelta(days=1)).isoformat()
                 high = (end_time.date() + timedelta(days=1)).isoformat()
             case TimeShape.INTERVAL | TimeShape.SAMPLE:
                 suffix = "interval.start_time" if shape is TimeShape.INTERVAL else "sample_time.physical_time"

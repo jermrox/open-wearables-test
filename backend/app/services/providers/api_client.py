@@ -14,7 +14,6 @@ from app.database import DbSession
 from app.integrations.redis_client import get_redis_client
 from app.repositories import UserConnectionRepository
 from app.services.providers.templates.base_oauth import BaseOAuthTemplate
-from app.services.sync_coordination import renew_if_due
 from app.utils.structured_logging import log_structured
 
 logger = logging.getLogger(__name__)
@@ -154,7 +153,6 @@ def make_authenticated_request(
     url = f"{api_base_url}{endpoint}"
 
     for attempt in range(MAX_RETRIES + 1):
-        renew_if_due()
         try:
             with httpx.Client(http2=http2) as client:
                 response = client.request(

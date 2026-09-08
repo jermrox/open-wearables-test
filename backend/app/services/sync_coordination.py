@@ -19,12 +19,12 @@ Redis keys (scoped to provider + provider_user_id + scope):
 
 import logging
 import threading
-import time
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 from app.config import settings
 from app.integrations.redis_client import get_redis_client
+from app.utils.structured_logging import log_structured
 
 logger = logging.getLogger(__name__)
 
@@ -127,11 +127,25 @@ class _Lease:
     user_id: UUID
     token: str
     scope: str
-    last: float
     lost: bool = False
 
 
+@dataclass
+class _Renewer:
+    """A bound lease plus the daemon thread holding it alive."""
+
+    lease: _Lease
+    stop: threading.Event
+    thread: threading.Thread
+
+
+# Bound per task thread; the renewer thread gets its _Lease by reference, since a
+# thread-local is invisible from the thread it renews for.
 _lease = threading.local()
+
+# The renewer only ever waits on stop.set(), so a join this long means it is blocked
+# in Redis; it is a daemon thread and dies with the worker either way.
+_JOIN_TIMEOUT_SECONDS = 5.0
 
 
 def renew_primary(
@@ -156,43 +170,105 @@ def bind_primary_lease(
     *,
     scope: str = "pull",
 ) -> None:
-    """Bind a held lock to this thread so provider requests renew it as they go.
+    """Hold a won lock alive from a daemon thread for as long as this run lasts.
 
-    A no-op without a token, so callers that are not primary need no branch.
+    The thread dies with the worker process, so a killed or restarted worker stops
+    renewing and the lock frees itself within one lease.  A no-op without a token, so
+    callers that are not primary need no branch.
     """
-    _lease.state = (
-        _Lease(provider, provider_user_id, user_id, token, scope, time.monotonic())
-        if token and provider_user_id
-        else None
+    clear_primary_lease()
+    if not token or not provider_user_id:
+        return
+    lease = _Lease(provider, provider_user_id, user_id, token, scope)
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=_renew_until_stopped,
+        args=(lease, stop),
+        name=f"lease-renew-{provider}-{scope}",
+        daemon=True,
     )
+    _lease.state = _Renewer(lease, stop, thread)
+    thread.start()
 
 
 def clear_primary_lease() -> None:
+    """Stop renewing. Safe to call when nothing is bound, and safe to call twice."""
+    state: _Renewer | None = getattr(_lease, "state", None)
     _lease.state = None
+    if state is None:
+        return
+    state.stop.set()
+    state.thread.join(timeout=_JOIN_TIMEOUT_SECONDS)
 
 
-def renew_if_due() -> None:
-    """Renew this thread's lease once the interval has elapsed; called per provider request."""
-    state: _Lease | None = getattr(_lease, "state", None)
-    if state is None or state.lost:
-        return
-    if time.monotonic() - state.last < settings.linked_sync_renew_interval_seconds:
-        return
-    state.last = time.monotonic()
-    if not renew_primary(state.provider, state.provider_user_id, state.user_id, state.token, scope=state.scope):
-        state.lost = True
-        logger.warning(
-            "Lost %s %s lease for user %s mid-sync — another profile now holds it",
-            state.provider,
-            state.scope,
-            state.user_id,
+def reacquire_primary(
+    provider: str,
+    provider_user_id: str,
+    user_id: UUID,
+    token: str,
+    *,
+    scope: str = "pull",
+) -> bool:
+    """Retake a lapsed lease under the same token, only while nobody else holds the lock."""
+    key = _primary_key(provider, provider_user_id, scope)
+    value = f"{user_id}:{token}"
+    return bool(get_redis_client().set(key, value, nx=True, ex=_ttl_for(scope)))
+
+
+def _renew_until_stopped(lease: _Lease, stop: threading.Event) -> None:
+    """Extend the lease every interval until the run ends or the lock is taken from us."""
+    interval = settings.linked_sync_renew_interval_seconds
+    while not stop.wait(interval):
+        try:
+            if renew_primary(lease.provider, lease.provider_user_id, lease.user_id, lease.token, scope=lease.scope):
+                continue
+            retaken = reacquire_primary(
+                lease.provider, lease.provider_user_id, lease.user_id, lease.token, scope=lease.scope
+            )
+        except Exception as exc:
+            # An unreachable Redis means nobody else can take the lock either, so keep holding.
+            log_structured(
+                logger,
+                "warning",
+                f"Could not renew {lease.provider} {lease.scope} lease: {exc}",
+                provider=lease.provider,
+                action="lease_renew_error",
+                scope=lease.scope,
+                user_id=str(lease.user_id),
+            )
+            continue
+        if retaken:
+            if stop.is_set():
+                # The run ended while we were retaking it; don't leave a lock nobody will release.
+                release_primary(lease.provider, lease.provider_user_id, lease.user_id, lease.token, scope=lease.scope)
+                return
+            log_structured(
+                logger,
+                "warning",
+                f"Retook lapsed {lease.provider} {lease.scope} lease — it had expired unclaimed",
+                provider=lease.provider,
+                action="lease_retaken",
+                scope=lease.scope,
+                user_id=str(lease.user_id),
+            )
+            continue
+        lease.lost = True
+        log_structured(
+            logger,
+            "warning",
+            f"Lost {lease.provider} {lease.scope} lease mid-sync — another profile now holds it",
+            provider=lease.provider,
+            action="lease_lost",
+            scope=lease.scope,
+            user_id=str(lease.user_id),
         )
+        return
 
 
 def lease_lost() -> bool:
     """True once a renewal found the lock reassigned: stop acting as primary."""
-    state: _Lease | None = getattr(_lease, "state", None)
-    return state is not None and state.lost
+    state: _Renewer | None = getattr(_lease, "state", None)
+    return state is not None and state.lease.lost
 
 
 def store_primary_token(
@@ -265,7 +341,14 @@ def get_secondary_user_ids(
         try:
             uids.append(UUID(raw))
         except ValueError:
-            logger.warning("Ignoring invalid UUID in secondaries set: %s", raw)
+            log_structured(
+                logger,
+                "warning",
+                f"Ignoring invalid UUID in secondaries set: {raw}",
+                provider=provider,
+                action="invalid_secondary",
+                scope=scope,
+            )
     return uids
 
 

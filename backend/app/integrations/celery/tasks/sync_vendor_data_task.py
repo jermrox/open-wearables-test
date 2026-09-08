@@ -266,8 +266,6 @@ def sync_vendor_data(
                         )
                         continue
 
-                bind_primary_lease(provider_name, connection.provider_user_id, user_uuid, shared_token)
-
                 _emit_sync_status(
                     emit_sync_started,
                     user_uuid,
@@ -290,6 +288,9 @@ def sync_vendor_data(
                 )
 
                 try:
+                    # Inside the try: the finally below is what stops the renewal thread.
+                    bind_primary_lease(provider_name, connection.provider_user_id, user_uuid, shared_token)
+
                     strategy = factory.get_provider(provider_name)
                     provider_result = ProviderSyncResult(success=True, params={})
 
@@ -494,6 +495,8 @@ def sync_vendor_data(
                         user_connection_repo.update_last_synced_at(db, connection)
 
                     if shared_token and connection.provider_user_id and not lease_lost():
+                        # Stop renewing first, or the renewer can retake the lock we just released.
+                        clear_primary_lease()
                         release_primary(
                             provider_name, connection.provider_user_id, user_uuid, shared_token, scope="pull"
                         )
@@ -597,6 +600,7 @@ def sync_vendor_data(
 
                 except Exception as e:
                     if shared_token and connection.provider_user_id:
+                        clear_primary_lease()
                         release_primary(
                             provider_name, connection.provider_user_id, user_uuid, shared_token, scope="pull"
                         )
