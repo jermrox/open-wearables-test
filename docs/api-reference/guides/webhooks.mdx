@@ -498,6 +498,15 @@ curl -X POST "http://localhost:8000/api/v1/webhooks/endpoints" \
 
 Omit the field entirely to receive all event types.
 
+To later remove the event type filter from an existing endpoint (receive all event types again), send a `PATCH` with `"filter_types": []`:
+
+```bash
+curl -X PATCH "http://localhost:8000/api/v1/webhooks/endpoints/ep_2t8Q4Xv9mNkRpLzYoB3cW7" \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{ "filter_types": [] }'
+```
+
 ### Filter by user
 
 Pass `user_id` to scope an endpoint to events for a single user. All other users' events are silently dropped before delivery.

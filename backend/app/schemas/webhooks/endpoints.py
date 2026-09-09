@@ -37,7 +37,10 @@ class EndpointCreateRequest(BaseModel):
 class EndpointUpdateRequest(BaseModel):
     url: str | None = None
     description: str | None = None
-    filter_types: list[str] | None = None
+    filter_types: list[str] | None = Field(
+        None,
+        description="Only deliver events of these types. Pass an empty list to remove the filter.",
+    )
     user_id: UUID | None = Field(
         None,
         description="Subscribe only to events for this user. Pass null to remove the filter.",

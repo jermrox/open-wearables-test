@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.integrations.celery.tasks.emit_webhook_event_task import emit_webhook_event
 from app.schemas.webhooks.event_types import EVENT_TYPE_DESCRIPTIONS, WebhookEventType
+from app.services.outgoing_webhooks import svix as svix_service
 from app.services.outgoing_webhooks.events import (
     SVIX_MAX_SAMPLES_PER_EVENT,
     _dispatch,
@@ -489,3 +490,56 @@ class TestOutgoingWebhooksAPI:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# svix_service.create_endpoint / patch_endpoint — filter_types translation
+# ---------------------------------------------------------------------------
+
+
+class TestSvixFilterTypesHandling:
+    """Svix rejects an empty `filter_types` list outright ("eventTypes can't
+    be empty, it must have at least one item"), so an empty selection must be
+    translated to omitting the key (create) or an explicit null (patch)
+    before it reaches the Svix client — never sent through as [].
+    """
+
+    @pytest.fixture
+    def mock_client(self) -> Generator[MagicMock, None, None]:
+        mock = MagicMock()
+        with patch("app.services.outgoing_webhooks.svix._client", mock):
+            yield mock
+
+    @pytest.mark.parametrize("filter_types", [None, []])
+    def test_create_endpoint_omits_filter_types_when_empty(
+        self, mock_client: MagicMock, filter_types: list[str] | None
+    ) -> None:
+        svix_service.create_endpoint("app_1", "https://example.com/wh", filter_types=filter_types)
+
+        sent = mock_client.endpoint.create.call_args.args[1]
+        assert "filter_types" not in sent.model_fields_set
+
+    def test_create_endpoint_includes_filter_types_when_populated(self, mock_client: MagicMock) -> None:
+        svix_service.create_endpoint("app_1", "https://example.com/wh", filter_types=["workout.created"])
+
+        sent = mock_client.endpoint.create.call_args.args[1]
+        assert sent.filter_types == ["workout.created"]
+
+    def test_patch_endpoint_leaves_filter_types_untouched_when_not_provided(self, mock_client: MagicMock) -> None:
+        svix_service.patch_endpoint("app_1", "ep_1", filter_types=None)
+
+        sent = mock_client.endpoint.patch.call_args.args[2]
+        assert "filter_types" not in sent.model_fields_set
+
+    def test_patch_endpoint_clears_filter_types_with_explicit_null(self, mock_client: MagicMock) -> None:
+        svix_service.patch_endpoint("app_1", "ep_1", filter_types=[])
+
+        sent = mock_client.endpoint.patch.call_args.args[2]
+        assert "filter_types" in sent.model_fields_set
+        assert sent.filter_types is None
+
+    def test_patch_endpoint_sets_filter_types_when_populated(self, mock_client: MagicMock) -> None:
+        svix_service.patch_endpoint("app_1", "ep_1", filter_types=["sleep.created"])
+
+        sent = mock_client.endpoint.patch.call_args.args[2]
+        assert sent.filter_types == ["sleep.created"]
