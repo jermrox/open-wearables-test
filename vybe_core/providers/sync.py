@@ -29,6 +29,7 @@ class IncrementalEvidenceProvider(Protocol):
         self,
         *,
         subject_id: str,
+        stream: str,
         window: SyncWindow,
         cursor: str | None,
     ) -> ProviderBatch: ...
@@ -46,7 +47,7 @@ class SyncRunResult:
 
 
 class ProviderSyncRunner:
-    """Runs incremental provider sync using opaque provider-owned cursors."""
+    """Runs incremental provider sync using stream-explicit opaque cursors."""
 
     def __init__(
         self,
@@ -97,6 +98,7 @@ class ProviderSyncRunner:
         while batch_count < self._max_batches_per_run:
             batch: ProviderBatch = await collect_batch(
                 subject_id=subject_id,
+                stream=stream,
                 window=window,
                 cursor=cursor,
             )
@@ -105,8 +107,6 @@ class ProviderSyncRunner:
             batch_key_material = batch.source_batch_id or (
                 f"{person_id}|{provider.provider_id}|{stream}|{cursor or 'START'}|{batch.next_cursor or 'END'}"
             )
-            # IdempotencyKeyBuilder owns the hashing namespace; provider cursors
-            # and batch IDs remain opaque strings.
             idempotency_key = self._idempotency_keys.hash_material(batch_key_material)
 
             result: BatchExecutionResult = await self._executor.execute(
