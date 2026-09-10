@@ -19,6 +19,21 @@ class DeliveryMode(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class ProviderCapabilities:
+    """Provider-wide capability summary.
+
+    This is the union/high-level description of a provider. Runtime sync choices
+    should use ``stream_capabilities`` because delivery methods can differ by
+    data stream within the same provider.
+    """
+
+    delivery_modes: frozenset[DeliveryMode] = field(default_factory=frozenset)
+    supports_historical_sync: bool = False
+    supports_live_sync: bool = False
+    max_historical_days: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderStreamCapabilities:
     delivery_modes: frozenset[DeliveryMode] = field(default_factory=frozenset)
     supports_historical_sync: bool = False
     supports_live_sync: bool = False
@@ -55,6 +70,22 @@ class EvidenceProvider(ABC):
     @abstractmethod
     def capabilities(self) -> ProviderCapabilities:
         raise NotImplementedError
+
+    def stream_capabilities(self, stream: str) -> ProviderStreamCapabilities:
+        """Return delivery behavior for one stream.
+
+        Providers with uniform behavior can rely on this default. Providers with
+        mixed delivery semantics MUST override it rather than letting the global
+        provider summary drive stream-specific execution.
+        """
+
+        caps = self.capabilities
+        return ProviderStreamCapabilities(
+            delivery_modes=caps.delivery_modes,
+            supports_historical_sync=caps.supports_historical_sync,
+            supports_live_sync=caps.supports_live_sync,
+            max_historical_days=caps.max_historical_days,
+        )
 
     @abstractmethod
     async def collect(
