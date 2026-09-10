@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from vybe_core.ingestion.checkpoint import SyncCheckpoint
@@ -27,7 +28,7 @@ DATABASE_URL = os.environ.get(
 NOW = datetime(2026, 9, 10, 18, 0, tzinfo=timezone.utc)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def engine():
     engine = create_async_engine(DATABASE_URL)
     async with engine.begin() as connection:
