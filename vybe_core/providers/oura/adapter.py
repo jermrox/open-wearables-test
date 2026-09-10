@@ -9,7 +9,13 @@ from typing import Any
 
 from vybe_core.models.evidence import Evidence, EvidenceProvenance, EvidenceSource, SourceType
 from vybe_core.providers.access_tokens import AccessTokenResolver
-from vybe_core.providers.contracts import DeliveryMode, EvidenceProvider, ProviderCapabilities, SyncWindow
+from vybe_core.providers.contracts import (
+    DeliveryMode,
+    EvidenceProvider,
+    ProviderCapabilities,
+    ProviderStreamCapabilities,
+    SyncWindow,
+)
 from vybe_core.providers.http import JsonHttpClient
 from vybe_core.providers.sync import ProviderBatch
 
@@ -114,6 +120,25 @@ class OuraProvider(EvidenceProvider):
             supports_historical_sync=True,
             supports_live_sync=True,
         )
+
+    def stream_capabilities(self, stream: str) -> ProviderStreamCapabilities:
+        if stream == "heart_rate":
+            # Oura V2 exposes heart rate through REST, but the current webhook
+            # data_type enum does not list heartrate.
+            return ProviderStreamCapabilities(
+                delivery_modes=frozenset({DeliveryMode.REST_PULL}),
+                supports_historical_sync=True,
+                supports_live_sync=True,
+            )
+        if stream == "steps":
+            # Steps are sourced from daily_activity, which is a documented Oura
+            # webhook data type as well as a REST collection.
+            return ProviderStreamCapabilities(
+                delivery_modes=frozenset({DeliveryMode.REST_PULL, DeliveryMode.WEBHOOK}),
+                supports_historical_sync=True,
+                supports_live_sync=True,
+            )
+        raise OuraDataError(f"unsupported Oura stream: {stream}")
 
     async def collect(
         self,
