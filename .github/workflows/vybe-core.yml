@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - 'vybe_core/**'
+      - 'vybe_api/**'
       - '.github/workflows/vybe-core.yml'
   pull_request:
     paths:
       - 'vybe_core/**'
+      - 'vybe_api/**'
       - '.github/workflows/vybe-core.yml'
 
 jobs:
@@ -34,12 +36,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Install Vybe Core test dependencies
+      - name: Install Vybe test dependencies
         run: >-
           python -m pip install
           pytest
           pytest-asyncio
           sqlalchemy
           'psycopg[binary]'
-      - name: Run Vybe core tests
-        run: python -m pytest -q vybe_core/tests
+          fastapi
+          httpx
+      - name: Run Vybe core and API tests
+        run: python -m pytest -q vybe_core/tests vybe_api/tests
