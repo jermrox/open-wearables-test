@@ -38,6 +38,27 @@ class ProviderConnection:
             raise ValueError("last_synced_at cannot predate connection creation")
 
 
+class ProviderConnectionStore(Protocol):
+    async def put(self, connection: ProviderConnection) -> None: ...
+
+    async def get(self, connection_id: UUID) -> ProviderConnection | None: ...
+
+    async def get_for_person_provider(
+        self,
+        *,
+        application_id: UUID,
+        person_id: UUID,
+        provider: str,
+    ) -> ProviderConnection | None: ...
+
+    async def list_for_person(
+        self,
+        *,
+        application_id: UUID,
+        person_id: UUID,
+    ) -> tuple[ProviderConnection, ...]: ...
+
+
 class TokenVault(Protocol):
     """Secret-storage boundary for OAuth/provider credentials.
 
