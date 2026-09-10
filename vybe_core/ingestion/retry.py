@@ -7,6 +7,8 @@ from enum import Enum
 
 class FailureDisposition(str, Enum):
     RETRYABLE = "retryable"
+    REAUTH_REQUIRED = "reauth_required"
+    USER_ACTION_REQUIRED = "user_action_required"
     TERMINAL = "terminal"
 
 
@@ -49,5 +51,5 @@ class FailureRecord:
             raise ValueError("operation and provider are required")
         if self.attempt < 1:
             raise ValueError("attempt must be at least 1")
-        if self.disposition is FailureDisposition.TERMINAL and self.retry_after is not None:
-            raise ValueError("terminal failures cannot have retry_after")
+        if self.disposition is not FailureDisposition.RETRYABLE and self.retry_after is not None:
+            raise ValueError("only retryable failures can have retry_after")
