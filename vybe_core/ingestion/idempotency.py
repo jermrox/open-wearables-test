@@ -30,17 +30,21 @@ def payload_sha256(envelope: IngestionEnvelope) -> str:
 class IdempotencyKeyBuilder:
     namespace: str = "vybe"
 
+    def hash_material(self, material: str) -> str:
+        if not material:
+            raise ValueError("idempotency material must not be empty")
+        return sha256(f"{self.namespace}|{material}".encode("utf-8")).hexdigest()
+
     def build(self, envelope: IngestionEnvelope) -> str:
         if envelope.external_event_id:
-            material = f"{self.namespace}|{envelope.provider}|{envelope.external_event_id}"
+            material = f"{envelope.provider}|{envelope.external_event_id}"
         else:
             material = "|".join(
                 [
-                    self.namespace,
                     envelope.provider,
                     envelope.mode.value,
                     str(envelope.person_id),
                     payload_sha256(envelope),
                 ]
             )
-        return sha256(material.encode("utf-8")).hexdigest()
+        return self.hash_material(material)
