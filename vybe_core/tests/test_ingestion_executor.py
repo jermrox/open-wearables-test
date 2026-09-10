@@ -158,7 +158,7 @@ async def test_checkpoint_failure_marks_batch_seen_after_evidence_commit() -> No
 
 
 @pytest.mark.asyncio
-async def test_duplicate_batch_short_circuits_without_reprocessing() -> None:
+async def test_duplicate_batch_repairs_checkpoint_without_reprocessing() -> None:
     person_id = uuid4()
     evidence_store = MemoryEvidenceStore()
     checkpoint_store = MemoryCheckpointStore()
@@ -179,5 +179,7 @@ async def test_duplicate_batch_short_circuits_without_reprocessing() -> None:
     )
 
     assert result.duplicate is True
+    assert result.checkpoint_advanced is True
     assert evidence_store.items == []
-    assert checkpoint_store.value is None
+    assert checkpoint_store.value is not None
+    assert checkpoint_store.value.cursor == "next-4"
