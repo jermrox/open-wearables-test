@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable
 
-from vybe_core.derivations.baseline import BaselineResult, derive_baseline_deviation
+from vybe_core.derivations.baseline import derive_baseline_delta
 from vybe_core.models.evidence import Evidence
 from vybe_core.resolution.source_priority import ResolutionPolicy, resolve_best
 
@@ -13,7 +13,7 @@ from vybe_core.resolution.source_priority import ResolutionPolicy, resolve_best
 class MetricState:
     metric: str
     current: Evidence
-    baseline: BaselineResult | None
+    baseline_delta: Evidence | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +37,8 @@ def build_personal_state_snapshot(
 ) -> PersonalStateSnapshot:
     if generated_at.tzinfo is None:
         raise ValueError("generated_at must be timezone-aware")
+    if baseline_window_size < baseline_minimum_samples:
+        raise ValueError("baseline_window_size must be >= baseline_minimum_samples")
 
     all_evidence = tuple(evidence)
     states: list[MetricState] = []
@@ -55,21 +57,26 @@ def build_personal_state_snapshot(
         current = resolve_best(latest_candidates, resolution_policy).selected
 
         historical = tuple(
-            item
-            for item in candidates
-            if item.id != current.id and isinstance(item.value, (int, float))
+            sorted(
+                (
+                    item
+                    for item in candidates
+                    if item.id != current.id and isinstance(item.value, (int, float)) and not isinstance(item.value, bool)
+                ),
+                key=lambda item: item.recorded_at,
+                reverse=True,
+            )[:baseline_window_size]
         )
 
-        baseline: BaselineResult | None = None
-        if isinstance(current.value, (int, float)) and len(historical) >= baseline_minimum_samples:
-            baseline = derive_baseline_deviation(
+        baseline_delta: Evidence | None = None
+        if isinstance(current.value, (int, float)) and not isinstance(current.value, bool) and len(historical) >= baseline_minimum_samples:
+            baseline_delta = derive_baseline_delta(
                 current=current,
                 history=historical,
-                window_size=baseline_window_size,
                 minimum_samples=baseline_minimum_samples,
             )
 
-        states.append(MetricState(metric=metric, current=current, baseline=baseline))
+        states.append(MetricState(metric=metric, current=current, baseline_delta=baseline_delta))
 
     return PersonalStateSnapshot(
         generated_at=generated_at,
