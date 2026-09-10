@@ -47,19 +47,36 @@ class ProviderRegistry:
     def all(self) -> tuple[EvidenceProvider, ...]:
         return tuple(self._providers[key] for key in sorted(self._providers))
 
-    def validate_window(self, provider_id: str, window: SyncWindow) -> None:
+    def validate_window(self, provider_id: str, window: SyncWindow, *, stream: str | None = None) -> None:
         provider = self.get(provider_id)
-        maximum_days = provider.capabilities.max_historical_days
+        maximum_days = (
+            provider.stream_capabilities(stream).max_historical_days
+            if stream is not None
+            else provider.capabilities.max_historical_days
+        )
         if maximum_days is None:
             return
         if window.end - window.start > timedelta(days=maximum_days):
+            target = f"{provider.provider_id}:{stream}" if stream is not None else provider.provider_id
             raise ProviderRegistryError(
-                f"{provider.provider_id} supports at most {maximum_days} historical days per request"
+                f"{target} supports at most {maximum_days} historical days per request"
             )
 
-    def require_delivery_mode(self, provider_id: str, mode: DeliveryMode) -> None:
+    def require_delivery_mode(
+        self,
+        provider_id: str,
+        mode: DeliveryMode,
+        *,
+        stream: str | None = None,
+    ) -> None:
         provider = self.get(provider_id)
-        if mode not in provider.capabilities.delivery_modes:
+        modes = (
+            provider.stream_capabilities(stream).delivery_modes
+            if stream is not None
+            else provider.capabilities.delivery_modes
+        )
+        if mode not in modes:
+            target = f"{provider.provider_id}:{stream}" if stream is not None else provider.provider_id
             raise ProviderRegistryError(
-                f"{provider.provider_id} does not support delivery mode {mode.value}"
+                f"{target} does not support delivery mode {mode.value}"
             )
