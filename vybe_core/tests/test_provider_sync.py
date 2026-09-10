@@ -49,7 +49,7 @@ class FakeProvider(EvidenceProvider):
             max_historical_days=30,
         )
 
-    async def collect(self, subject_id: str, window: SyncWindow):
+    async def collect(self, subject_id: str, stream: str, window: SyncWindow):
         if False:
             yield evidence(0, NOW)
 
