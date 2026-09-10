@@ -6,7 +6,6 @@ from typing import Iterable, Protocol
 from uuid import UUID
 
 from vybe_core.ingestion.checkpoint import CheckpointStore, SyncCheckpoint
-from vybe_core.ingestion.idempotency import IdempotencyStore
 from vybe_core.models.evidence import Evidence
 from vybe_core.refinery.pipeline import EvidenceRefinery, RefineryResult
 from vybe_core.storage.contracts import EvidenceStore
@@ -62,7 +61,9 @@ class ProviderIngestionExecutor:
     5. Advance the provider checkpoint.
 
     If refinement or persistence fails, neither idempotency nor checkpoint state
-    is advanced. This makes retries safe and avoids silently skipping source data.
+    is advanced. If evidence persistence succeeds but checkpoint persistence
+    fails, replay is safe: the batch is already marked seen and the retry can
+    repair the checkpoint without appending evidence again.
     """
 
     def __init__(
@@ -77,6 +78,16 @@ class ProviderIngestionExecutor:
         self._checkpoint_store = checkpoint_store
         self._idempotency_store = idempotency_store
         self._refinery = refinery or EvidenceRefinery()
+
+    @staticmethod
+    def _checkpoint(person_id: UUID, provider: str, progress: ProviderProgress) -> SyncCheckpoint:
+        return SyncCheckpoint(
+            person_id=person_id,
+            provider=provider,
+            stream=progress.stream,
+            cursor=progress.cursor,
+            updated_at=progress.observed_at,
+        )
 
     async def execute(
         self,
@@ -93,12 +104,22 @@ class ProviderIngestionExecutor:
             raise ValueError("idempotency_key must not be empty")
 
         if await self._idempotency_store.seen(idempotency_key):
+            checkpoint_advanced = False
+            if progress is not None:
+                try:
+                    await self._checkpoint_store.put(self._checkpoint(person_id, provider, progress))
+                except Exception as exc:
+                    raise IngestionExecutionError(
+                        "batch was already committed, but checkpoint repair failed"
+                    ) from exc
+                checkpoint_advanced = True
+
             return BatchExecutionResult(
                 duplicate=True,
                 persisted_count=0,
                 rejected_count=0,
                 duplicate_group_count=0,
-                checkpoint_advanced=False,
+                checkpoint_advanced=checkpoint_advanced,
                 refinery=None,
             )
 
@@ -109,21 +130,14 @@ class ProviderIngestionExecutor:
             raise IngestionExecutionError("ingestion batch failed before commit state advancement") from exc
 
         # A persisted batch is now replay-safe. Mark it before advancing progress;
-        # if checkpoint persistence fails, retrying the same batch will not append
-        # duplicate evidence. The checkpoint can then be repaired/retried separately.
+        # if checkpoint persistence fails, a retry can repair the checkpoint
+        # without appending the same evidence again.
         await self._idempotency_store.mark_seen(idempotency_key)
 
         checkpoint_advanced = False
         if progress is not None:
-            checkpoint = SyncCheckpoint(
-                person_id=person_id,
-                provider=provider,
-                stream=progress.stream,
-                cursor=progress.cursor,
-                updated_at=progress.observed_at,
-            )
             try:
-                await self._checkpoint_store.put(checkpoint)
+                await self._checkpoint_store.put(self._checkpoint(person_id, provider, progress))
             except Exception as exc:
                 raise IngestionExecutionError(
                     "evidence persisted and idempotency committed, but checkpoint advancement failed"
