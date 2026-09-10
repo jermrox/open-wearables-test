@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from uuid import UUID
 
 from vybe_core.access.policy import DataScope, DeveloperGrant
 from vybe_core.auth.credentials import CredentialVerificationError, verify_credential
@@ -11,8 +12,8 @@ from vybe_core.storage.postgres_auth import AuthStore
 
 @dataclass(frozen=True, slots=True)
 class AuthenticatedApplication:
-    application_id: object
-    credential_id: object
+    application_id: UUID
+    credential_id: UUID
     grant: DeveloperGrant
 
 
