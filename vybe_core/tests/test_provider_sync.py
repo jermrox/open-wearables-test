@@ -35,7 +35,7 @@ def evidence(value: int, at: datetime) -> Evidence:
 class FakeProvider(EvidenceProvider):
     def __init__(self, batches: dict[str | None, ProviderBatch]) -> None:
         self.batches = batches
-        self.calls: list[str | None] = []
+        self.calls: list[tuple[str, str | None]] = []
 
     @property
     def provider_id(self) -> str:
@@ -53,8 +53,15 @@ class FakeProvider(EvidenceProvider):
         if False:
             yield evidence(0, NOW)
 
-    async def collect_batch(self, *, subject_id: str, window: SyncWindow, cursor: str | None) -> ProviderBatch:
-        self.calls.append(cursor)
+    async def collect_batch(
+        self,
+        *,
+        subject_id: str,
+        stream: str,
+        window: SyncWindow,
+        cursor: str | None,
+    ) -> ProviderBatch:
+        self.calls.append((stream, cursor))
         return self.batches[cursor]
 
 
@@ -140,7 +147,7 @@ async def test_multi_page_sync_advances_opaque_cursor_after_each_batch() -> None
     assert result.completed is True
     assert result.batches == 2
     assert result.persisted == 2
-    assert provider.calls == [None, "p2"]
+    assert provider.calls == [("heart_rate", None), ("heart_rate", "p2")]
     checkpoint = await checkpoints.get(person_id, "fake", "heart_rate")
     assert checkpoint is not None
     assert checkpoint.cursor == "p3"
@@ -163,7 +170,7 @@ async def test_existing_checkpoint_is_passed_back_to_provider_opaque() -> None:
         observed_at=NOW,
     )
 
-    assert provider.calls == ["resume-token"]
+    assert provider.calls == [("heart_rate", "resume-token")]
 
 
 @pytest.mark.asyncio
