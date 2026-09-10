@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from typing import Protocol
 from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, String, Table, UniqueConstraint, and_, select
+from sqlalchemy import DateTime, ForeignKey, String, Table, UniqueConstraint, select
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.schema import Column
 
+from vybe_core.auth.contracts import AuthStore
 from vybe_core.auth.models import ApiCredential, Application, CredentialStatus, Organization
 from vybe_core.storage.postgres import metadata
 
@@ -24,8 +24,17 @@ organization_table = Table(
 application_table = Table(
     "vybe_applications",
     metadata,
-    Column("application_id", PGUUID(as_uuid=True), primary_key=True),
-    Column("organization_id", PGUUID(as_uuid=True), ForeignKey("vybe_organizations.organization_id", ondelete="CASCADE"), nullable=False),
+    Column(
+        "application_id",
+        PGUUID(as_uuid=True),
+        primary_key=True,
+    ),
+    Column(
+        "organization_id",
+        PGUUID(as_uuid=True),
+        ForeignKey("vybe_organizations.organization_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("name", String(255), nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     UniqueConstraint("organization_id", "name", name="uq_vybe_application_organization_name"),
@@ -35,7 +44,12 @@ credential_table = Table(
     "vybe_api_credentials",
     metadata,
     Column("credential_id", PGUUID(as_uuid=True), primary_key=True),
-    Column("application_id", PGUUID(as_uuid=True), ForeignKey("vybe_applications.application_id", ondelete="CASCADE"), nullable=False),
+    Column(
+        "application_id",
+        PGUUID(as_uuid=True),
+        ForeignKey("vybe_applications.application_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
     Column("key_prefix", String(128), nullable=False, unique=True),
     Column("secret_hash", String(64), nullable=False),
     Column("scopes", JSONB, nullable=False),
@@ -43,14 +57,6 @@ credential_table = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("expires_at", DateTime(timezone=True), nullable=True),
 )
-
-
-class AuthStore(Protocol):
-    async def put_organization(self, organization: Organization) -> None: ...
-    async def put_application(self, application: Application) -> None: ...
-    async def put_credential(self, credential: ApiCredential) -> None: ...
-    async def get_application(self, application_id: UUID) -> Application | None: ...
-    async def get_credential_by_prefix(self, key_prefix: str) -> ApiCredential | None: ...
 
 
 def _application_from_row(row) -> Application:
