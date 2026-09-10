@@ -42,7 +42,8 @@ class EvidenceProvider(ABC):
 
     Implementations retrieve or receive source-native data, validate it, and emit
     canonical Evidence. Persistence, job dispatch, and AI reasoning do not belong
-    in provider implementations.
+    in provider implementations. The requested stream is explicit so a single
+    provider adapter can safely expose multiple vendor data collections.
     """
 
     @property
@@ -56,7 +57,12 @@ class EvidenceProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def collect(self, subject_id: str, window: SyncWindow) -> AsyncIterator[Evidence]:
-        """Emit normalized evidence for a bounded time window."""
+    async def collect(
+        self,
+        subject_id: str,
+        stream: str,
+        window: SyncWindow,
+    ) -> AsyncIterator[Evidence]:
+        """Emit normalized evidence for one named stream and bounded time window."""
         if False:
             yield  # pragma: no cover
