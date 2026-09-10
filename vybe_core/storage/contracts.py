@@ -34,6 +34,11 @@ class EvidenceStore(ABC):
     Storage implementations may use PostgreSQL, SQLite, object storage, or another
     backend, but callers depend only on this contract. Evidence records are append-
     only; mutation of existing evidence is intentionally not part of the interface.
+
+    `append_many` MUST be atomic from the caller's perspective: either every item
+    in the supplied batch is committed or none are. Implementations must roll back
+    partial writes before raising. Provider ingestion relies on this guarantee for
+    replay safety and checkpoint correctness.
     """
 
     @abstractmethod
@@ -42,6 +47,7 @@ class EvidenceStore(ABC):
 
     @abstractmethod
     async def append_many(self, person_id: UUID, evidence: Iterable[Evidence]) -> None:
+        """Atomically append a batch of immutable evidence."""
         raise NotImplementedError
 
     @abstractmethod
