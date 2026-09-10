@@ -9,7 +9,7 @@ from vybe_core.ingestion.checkpoint import CheckpointStore
 from vybe_core.ingestion.executor import BatchExecutionResult, ProviderIngestionExecutor, ProviderProgress
 from vybe_core.ingestion.idempotency import IdempotencyKeyBuilder
 from vybe_core.models.evidence import Evidence
-from vybe_core.providers.contracts import SyncWindow
+from vybe_core.providers.contracts import DeliveryMode, SyncWindow
 from vybe_core.providers.registry import ProviderRegistry
 
 
@@ -47,7 +47,7 @@ class SyncRunResult:
 
 
 class ProviderSyncRunner:
-    """Runs incremental provider sync using stream-explicit opaque cursors."""
+    """Runs incremental REST sync using stream-explicit opaque cursors."""
 
     def __init__(
         self,
@@ -81,7 +81,8 @@ class ProviderSyncRunner:
         if not stream.strip():
             raise ValueError("stream must not be empty")
 
-        self._registry.validate_window(provider_id, window)
+        self._registry.require_delivery_mode(provider_id, DeliveryMode.REST_PULL, stream=stream)
+        self._registry.validate_window(provider_id, window, stream=stream)
         provider = self._registry.get(provider_id)
         collect_batch = getattr(provider, "collect_batch", None)
         if collect_batch is None:
