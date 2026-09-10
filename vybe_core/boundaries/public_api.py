@@ -46,13 +46,13 @@ class MetricQuery:
 
 
 class DeveloperHealthAPI(Protocol):
-    """Commercially exposed health-data capability surface.
+    """Commercially exposed asynchronous health-data capability surface.
 
     This contract intentionally exposes normalized outputs only. It does not
     expose device protocol frames, firmware behavior, raw signal-processing
     internals, calibration constants, or proprietary model implementation.
     """
 
-    def query_metric(self, query: MetricQuery) -> tuple[MetricPoint, ...]: ...
+    async def query_metric(self, query: MetricQuery) -> tuple[MetricPoint, ...]: ...
 
-    def latest_metric(self, person_id: UUID, metric: PublicMetric) -> MetricPoint | None: ...
+    async def latest_metric(self, person_id: UUID, metric: PublicMetric) -> MetricPoint | None: ...
