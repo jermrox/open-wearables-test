@@ -85,7 +85,7 @@ def create_app(services: ApiServices) -> FastAPI:
         metric: PublicMetric,
         start_at: Annotated[datetime, Query()],
         end_at: Annotated[datetime, Query()],
-        identity: Annotated[RequestIdentity, Depends(require_metrics_identity)],
+        identity: RequestIdentity = Depends(require_metrics_identity),
         limit: Annotated[int, Query(ge=1, le=1000)] = 1000,
     ) -> list[MetricPoint]:
         try:
@@ -114,7 +114,7 @@ def create_app(services: ApiServices) -> FastAPI:
     async def latest_metric(
         person_id: UUID,
         metric: PublicMetric,
-        identity: Annotated[RequestIdentity, Depends(require_metrics_identity)],
+        identity: RequestIdentity = Depends(require_metrics_identity),
     ) -> MetricPoint | None:
         context = AccessContext(
             application_id=identity.authenticated.application_id,
