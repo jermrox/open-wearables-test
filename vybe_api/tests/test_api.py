@@ -201,6 +201,21 @@ async def test_authorized_latest_metric_returns_normalized_output_and_audits() -
 
 
 @pytest.mark.asyncio
+async def test_metric_query_requires_key_instead_of_treating_identity_as_query_param() -> None:
+    app, _, person_id, _ = await configured_app(grant_consent=True)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"/v1/people/{person_id}/metrics/heart_rate",
+            params={
+                "start_at": (NOW - timedelta(minutes=5)).isoformat(),
+                "end_at": NOW.isoformat(),
+            },
+        )
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_commercial_api_has_no_raw_signal_route() -> None:
     app, key, person_id, _ = await configured_app(grant_consent=True)
     transport = httpx.ASGITransport(app=app)
